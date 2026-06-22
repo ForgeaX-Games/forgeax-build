@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "allowSyntheticDefaultImports": true,
+    "useDefineForClassFields": true,
+    "types": ["bun"],
+    "paths": {
+      "@forgeax/game-types": ["./src/types.ts"]
+    }
+  },
+  "include": ["src", "test", "vite.config.ts"]
+}

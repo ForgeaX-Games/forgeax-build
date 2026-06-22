@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# .forgeax is a runtime symlink to the instance's .forgeax/ (managed by
+# studio's scripts/run.sh in dev mode). Never tracked.
+.forgeax

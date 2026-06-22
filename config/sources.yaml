@@ -1,0 +1,51 @@
+# forgeax build sources (6 source repos -> output/ monorepo)
+# Each entry runs through recipes/<name>.ts in the order listed below.
+# repo paths are local clones at /home/you/forge-project/ForgeaX-Games/<name>/
+# that already exist; the build does not re-clone, it just copies + transforms.
+
+version: 0.1.0
+
+# Where the build orchestrator finds the source repos on disk.
+# (For now: local sibling dirs. Future: replace with `clone` step in recipe.)
+local_root: ../
+
+sources:
+  - name: server
+    repo: server
+    recipe: server
+    target: server
+    description: Local daemon orchestrator. UI's only entrypoint.
+
+  - name: interface
+    repo: interface
+    recipe: interface
+    target: interface
+    description: React + Vite Studio UI.
+
+  - name: cli
+    # Vendored forgeax-cli (agentteam-os-future) snapshot. Real agent runtime
+    # kernel — drives every chat turn through gateway HTTP+WS on :3700.
+    repo: cli
+    recipe: cli
+    target: cli
+    description: Agent runtime kernel — daemon + gateway HTTP+WS, capability/skills/sessions.
+
+  - name: engine-mvp
+    # MVP uses forgeax threejs-3d template directly (D3); forgeax-engine repo
+    # gets filled in STEP 21 with the same content.
+    repo: engine
+    fallback_template: ../../forgeax-studio/packages/game_templates/templates/basic/threejs-3d
+    recipe: engine-mvp
+    target: engine
+    description: Three.js MVP engine.
+
+  - name: harness
+    repo: harness
+    recipe: harness
+    target: harness
+    description: Vendored skills/*.md + schemas/*.json (NO python).
+
+# games-template recipe removed: games are no longer build artifacts. Each
+# instance (studio dev mode / release-forgeax) owns its own .forgeax/games/
+# (runtime data, gitignored). Agents create games on demand; there is no
+# persistent _template scaffold synthesized by the build pipeline anymore.

@@ -17,6 +17,30 @@ const here = dirname(fileURLToPath(import.meta.url));
 // which run.sh symlinks to the instance's actual .forgeax in both modes.
 const viteRoot = here;
 
+// ── @forgeax packages to exclude from pre-bundle (SSOT-derived, no hand list) ──
+// SSOT = THIS root's node_modules/@forgeax, i.e. exactly the @forgeax packages
+// Vite resolves natively here. Excluding precisely that set both avoids the OOM
+// (under preserveSymlinks:true a pre-bundle crawls the nested workspace symlink
+// graph packages/engine/packages/*/node_modules/@forgeax/* → ../../../*, where one
+// file via combinatorially-many symlink paths becomes a distinct module → esbuild
+// blew past 80 GB when a game imported the un-excluded @forgeax/engine-physics)
+// AND stays resolvable. We must NOT over-exclude with the full engine/packages
+// tree: transitive-only packages absent from node_modules (engine-plugin /
+// engine-debug-draw, imported by engine-app / engine-runtime) must stay
+// pre-bundlable or native import analysis throws "Failed to resolve import".
+// Hand-listing was the original drift bug (named ~8 packages, missed physics).
+// @forgeax/scene shares the engine module subgraph; keep it excluded.
+function forgeaxWorkspacePackages(): string[] {
+  const out = new Set<string>(['@forgeax/scene']);
+  try {
+    for (const name of readdirSync(resolve(here, 'node_modules/@forgeax'))) {
+      out.add(`@forgeax/${name}`);
+    }
+  } catch { /* node_modules not materialised yet — fall through */ }
+  return [...out];
+}
+const FORGEAX_WS_PKGS = forgeaxWorkspacePackages();
+
 const PORT = Number(process.env.FORGEAX_ENGINE_PORT ?? 15173);
 const HOST = process.env.FORGEAX_ENGINE_HOST ?? '0.0.0.0';
 
@@ -289,47 +313,26 @@ export default defineConfig({
     silenceShaderEmitInServe(forgeaxShader()) as never,
   ],
   optimizeDeps: {
-    // Exclude engine workspace packages from Vite pre-bundling so they are
-    // loaded as native ESM .mjs (research F2: engine outputs ESM .mjs, vite
-    // 6 can serve them directly; pre-bundling would break source maps and
-    // module identity for the engine subgraph).
-    exclude: [
-      '@forgeax/engine-app',
-      '@forgeax/engine-runtime',
-      '@forgeax/engine-ecs',
-      '@forgeax/engine-types',
-      '@forgeax/engine-shader',
-      // @forgeax/scene re-exports engine-runtime components (Transform/HANDLE_CUBE
-      // etc.) to instantiate scene docs; it MUST share the engine subgraph's module
-      // identity, so exclude it from pre-bundling too (else a games' import would
-      // get a second engine-runtime instance and ECS handles wouldn't match).
-      '@forgeax/scene',
-      // game main.ts is dynamically imported (loadGame), so its imports are NOT
-      // in vite's startup entry scan. The native template pulls subpaths
-      // `@forgeax/engine-pack/guid` (AssetGuid) + `@forgeax/engine-image/hdr-decoder`
-      // (decodeHdr); left in the pre-bundle, vite discovers them lazily on a NEW
-      // game's first load → "optimized dependencies changed, reloading" → the
-      // preview reloads a few times (the "新建项目后游戏闪几下" flicker). Exclude
-      // them (native ESM, same as the rest of the engine subgraph) so there is no
-      // runtime re-optimize and no reload.
-      '@forgeax/engine-pack',
-      '@forgeax/engine-image',
-    ],
+    // Exclude the ENTIRE @forgeax workspace family from Vite pre-bundling so each
+    // is loaded as native ESM .mjs (engine outputs ESM .mjs; pre-bundling would
+    // break source maps + module identity for the engine subgraph). Deriving the
+    // full list (see forgeaxWorkspacePackages) is load-bearing: a game's
+    // dynamically-imported main.ts (loadGame, not in the startup scan) may pull
+    // ANY engine package or subpath (@forgeax/engine-physics,
+    // @forgeax/engine-pack/guid, …); a missing entry lets Vite lazily pre-bundle
+    // it and OOM esbuild on the preserveSymlinks symlink-diamond, besides the
+    // "新建项目后游戏闪几下" re-optimize flicker.
+    exclude: FORGEAX_WS_PKGS,
   },
   resolve: {
     alias: {
       '@forgeax/game-types': resolve(here, 'src/types.ts'),
     },
-    dedupe: [
-      '@forgeax/engine-runtime',
-      '@forgeax/engine-ecs',
-      '@forgeax/engine-types',
-      '@forgeax/engine-rhi',
-      '@forgeax/engine-math',
-      '@forgeax/engine-pack',
-      '@forgeax/engine-image',
-      '@forgeax/scene',
-    ],
+    // Dedupe the whole @forgeax family (same SSOT-derived list as optimizeDeps):
+    // every engine package must resolve to a single instance so ECS handles /
+    // component identities match across the game subgraph. A hand-listed subset
+    // had the same drift hazard as the old exclude list.
+    dedupe: FORGEAX_WS_PKGS,
     // User game files live at <studio-root>/.forgeax/games/<slug>/ (entry is a
     // root-level main.ts, extra modules under src/), reachable via run.sh's
     // symlink engine-src/.forgeax → <studio-root>/.forgeax.

@@ -28,7 +28,8 @@
     "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-shader": "workspace:*",
-    "@forgeax/engine-math": "workspace:*"
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

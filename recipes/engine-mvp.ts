@@ -7,9 +7,10 @@
 // packages/forgeax/engine/ for source-mode development.
 //
 // Two consumers of engine-src/:
-//   1. studio scripts/run.sh: `cd packages/build/engine-src && bunx vite`
-//      (engine-src has its own node_modules; bun install once via
-//      scripts/bootstrap.sh)
+//   1. the standalone game export (POST /api/workbench/games/:slug/package →
+//      engine-src/export/build-standalone.ts). engine-src is a studio root
+//      workspace member, so root `bun install` links its @forgeax/engine-*
+//      deps to the editor nested engine — no separate lockfile.
 //   2. this recipe: cp -r engine-src/ -> output/engine/ for release
 //      pipeline. build.sh publish then rsyncs output/engine/ ->
 //      packages/forgeax/engine/ as part of the release artifact.

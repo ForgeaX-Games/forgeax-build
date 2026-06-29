@@ -21,7 +21,7 @@ const viteRoot = here;
 // SSOT = THIS root's node_modules/@forgeax, i.e. exactly the @forgeax packages
 // Vite resolves natively here. Excluding precisely that set both avoids the OOM
 // (under preserveSymlinks:true a pre-bundle crawls the nested workspace symlink
-// graph packages/engine/packages/*/node_modules/@forgeax/* → ../../../*, where one
+// graph packages/editor/packages/engine/packages/*/node_modules/@forgeax/* → ../../../*, where one
 // file via combinatorially-many symlink paths becomes a distinct module → esbuild
 // blew past 80 GB when a game imported the un-excluded @forgeax/engine-physics)
 // AND stays resolvable. We must NOT over-exclude with the full engine/packages

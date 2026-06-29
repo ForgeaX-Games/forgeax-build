@@ -34,7 +34,7 @@ export default start;
 
 ## Relationship to game template
 
-When the user clicks "New Game" in Studio, the server copies the template from `packages/engine/templates/game-default/` into `.forgeax/games/<slug>/`. The template's `src/main.ts` exports a `GameEntry` function, which this runtime loads and executes via dynamic import.
+When the user clicks "New Game" in Studio, the server copies the template from `packages/editor/packages/engine/templates/game-default/` into `.forgeax/games/<slug>/`. The template's `src/main.ts` exports a `GameEntry` function, which this runtime loads and executes via dynamic import.
 
 ## Vite config notes
 

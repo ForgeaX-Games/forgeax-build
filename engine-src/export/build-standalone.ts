@@ -17,7 +17,7 @@
 // catalogued with relative urls — exactly what the dev preview serves — so the
 // runtime decodes them client-side (no prod texture-cook step needed).
 import { build } from 'vite';
-import { resolve, dirname, join } from 'node:path';
+import { resolve, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, renameSync, cpSync, chmodSync,
@@ -26,7 +26,12 @@ import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { buildPerGameCatalog } from '../pack-catalog.ts';
 
 const here = dirname(fileURLToPath(import.meta.url)); // .../engine-src/export
-const engineSrc = resolve(here, '..');                // .../engine-src
+// Engine source migrated to packages/editor/packages/play-runtime; the studio
+// packager copies this script into the selected engine root and passes its
+// path via FORGEAX_ENGINE_ROOT so vite + game (.forgeax/games) resolve there.
+const engineSrc = process.env.FORGEAX_ENGINE_ROOT
+  ? resolve(process.env.FORGEAX_ENGINE_ROOT)
+  : resolve(here, '..');                              // .../engine-src
 
 const slug = process.argv[2];
 const outDir = process.argv[3];
@@ -39,7 +44,13 @@ if (!/^[a-z0-9][a-z0-9-]{1,40}$/.test(slug)) {
   process.exit(2);
 }
 
-const gameDir = resolve(engineSrc, '.forgeax/games', slug);
+// The studio packager copies the currently-running game into a temp dir
+// physically under the engine root and passes it via FORGEAX_GAME_DIR, so the
+// game's bare imports (@forgeax/*) resolve from the engine root's node_modules.
+// Falls back to the engine-root .forgeax/games junction for standalone CLI use.
+const gameDir = process.env.FORGEAX_GAME_DIR
+  ? resolve(process.env.FORGEAX_GAME_DIR)
+  : resolve(engineSrc, '.forgeax/games', slug);
 if (!existsSync(gameDir)) {
   console.error(`game not found: ${gameDir}`);
   process.exit(2);
@@ -57,7 +68,11 @@ const genHtmlName = '.export-gen.index.html';
 const genEntryName = '.export-gen.main.ts';
 const genHtml = join(engineSrc, genHtmlName);
 const genEntry = join(engineSrc, genEntryName);
-const gameEntryImport = `./.forgeax/games/${slug}/${entryRel}`;
+// Import the game by a path relative to engineSrc (where the gen entry lives),
+// so it works whether the game sits at the default .forgeax/games junction or
+// in the packager's temp copy (FORGEAX_GAME_DIR), both physically under engineSrc.
+const relGameEntry = relative(engineSrc, join(gameDir, entryRel)).split(sep).join('/');
+const gameEntryImport = relGameEntry.startsWith('.') ? relGameEntry : `./${relGameEntry}`;
 
 const entrySrc = `import { createApp, loadGame } from '@forgeax/engine-app';
 import gameEntry from ${JSON.stringify(gameEntryImport)};

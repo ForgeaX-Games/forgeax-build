@@ -8,6 +8,7 @@
 //   assets/*.js, *.wasm     engine runtime + the game, bundled by Vite
 //   shaders/…               WGSL/GLSL shader pack + manifest.json
 //   game-assets/…           the game's raw assets/ dir, copied verbatim
+//   game-scenes/…           the game's raw scenes/ dir (level packs), if any
 //   pack-index.json         per-game asset catalog with RELATIVE urls
 //   serve.sh, README.md     how to run it locally
 //
@@ -20,7 +21,7 @@ import { build } from 'vite';
 import { resolve, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, renameSync, cpSync, chmodSync,
+  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, renameSync, cpSync, chmodSync, readdirSync,
 } from 'node:fs';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { buildPerGameCatalog } from '../pack-catalog.ts';
@@ -32,6 +33,24 @@ const here = dirname(fileURLToPath(import.meta.url)); // .../engine-src/export
 const engineSrc = process.env.FORGEAX_ENGINE_ROOT
   ? resolve(process.env.FORGEAX_ENGINE_ROOT)
   : resolve(here, '..');                              // .../engine-src
+
+// SSOT-derived list of @forgeax workspace packages resolvable from the engine
+// root — exactly the set vite resolves natively here. Used for dedupe so the
+// WHOLE @forgeax family collapses to one instance each. A hand-listed subset
+// (the old 5-entry dedupe) drifts: under preserveSymlinks:true the nested-pnpm
+// engine-physics ↔ rapier symlink-diamond recurses without bound and rollup
+// fails to resolve @dimforge/rapier*-compat. Mirrors vite.config.ts's
+// forgeaxWorkspacePackages() — keep the two in sync.
+function forgeaxWorkspacePackages(root: string): string[] {
+  const out = new Set<string>(['@forgeax/scene']);
+  try {
+    for (const name of readdirSync(resolve(root, 'node_modules/@forgeax'))) {
+      out.add(`@forgeax/${name}`);
+    }
+  } catch { /* node_modules not materialised — fall through */ }
+  return [...out];
+}
+const FORGEAX_WS_PKGS = forgeaxWorkspacePackages(engineSrc);
 
 const slug = process.argv[2];
 const outDir = process.argv[3];
@@ -55,12 +74,18 @@ if (!existsSync(gameDir)) {
   console.error(`game not found: ${gameDir}`);
   process.exit(2);
 }
-const gameAssets = join(gameDir, 'assets');
 
-let forge: { entry?: string; name?: string } = {};
+let forge: { entry?: string; name?: string; defaultScene?: string } = {};
 try { forge = JSON.parse(readFileSync(join(gameDir, 'forge.json'), 'utf8')); } catch { /* defaults */ }
 const entryRel = (forge.entry ?? 'main.ts').replace(/^\.?\//, '');
 const gameName = String(forge.name ?? slug);
+// defaultScene GUID is known at build time from forge.json — the dev preview
+// (play-runtime) resolves it at runtime via loadGameProject, but for a frozen
+// standalone build we inject it directly so the generated entry can instantiate
+// the host-side scene before bootstrap without bundling @forgeax/engine-project.
+const defaultSceneGuid = typeof forge.defaultScene === 'string' && forge.defaultScene.length > 0
+  ? forge.defaultScene
+  : '';
 
 // ── Generate the standalone entry + html at the engine root so the emitted
 // index.html lands at <outDir> root (Vite keeps html paths relative to root). ──
@@ -74,10 +99,17 @@ const genEntry = join(engineSrc, genEntryName);
 const relGameEntry = relative(engineSrc, join(gameDir, entryRel)).split(sep).join('/');
 const gameEntryImport = relGameEntry.startsWith('.') ? relGameEntry : `./${relGameEntry}`;
 
+// The game module is statically imported (bundled at build time) and consumed
+// via loadGame, which validates the `bootstrap` export and returns the entry.
+// This mirrors the dev preview (play-runtime): host instantiates the
+// defaultScene (when one exists) BEFORE bootstrap runs, then calls
+// bootstrap(world, ctx) with the world that already carries the scene entities.
 const entrySrc = `import { createApp, loadGame } from '@forgeax/engine-app';
-import gameEntry from ${JSON.stringify(gameEntryImport)};
+import * as gameModule from ${JSON.stringify(gameEntryImport)};
+import { AssetGuid } from '@forgeax/engine-pack/guid';
 
 const SLUG = ${JSON.stringify(slug)};
+const DEFAULT_SCENE_GUID = ${JSON.stringify(defaultSceneGuid)};
 
 function fail(msg: string) {
   const pre = document.createElement('pre');
@@ -111,17 +143,45 @@ function fail(msg: string) {
     canvas.height = window.innerHeight * d;
   });
 
+  // ── Default scene instantiate (asset-first startup) ──
+  // When forge.json declared a defaultScene, load + instantiate it into the
+  // live world BEFORE bootstrap, so the game module receives a world that
+  // already contains the scene entities (mirrors play-runtime). A failure logs
+  // but does not abort — bootstrap still runs (matches dev-preview AC-10).
+  let defaultSceneRoot;
+  let defaultScene;
+  if (DEFAULT_SCENE_GUID) {
+    const parsed = AssetGuid.parse(DEFAULT_SCENE_GUID);
+    if (parsed.ok) {
+      const assetRes = await renderer.assets.loadByGuid(parsed.value);
+      if (assetRes.ok) {
+        defaultScene = assetRes.value;
+        const handle = world.allocSharedRef('SceneAsset', assetRes.value);
+        const inst = renderer.assets.instantiate(handle, world);
+        if (inst.ok) defaultSceneRoot = inst.value;
+        else console.error('[export] defaultScene instantiate failed:', inst.error);
+      } else {
+        console.error('[export] defaultScene loadByGuid failed:', assetRes.error);
+      }
+    } else {
+      console.error('[export] defaultScene GUID malformed:', DEFAULT_SCENE_GUID, parsed.error);
+    }
+  }
+
   const ctx = {
     world,
     renderer,
     assets: renderer.assets,
     app: app.value,
     registerUpdate(fn: (dt: number) => void) { app.value.registerUpdate(fn); },
+    ...(defaultSceneRoot !== undefined ? { defaultSceneRoot } : {}),
+    ...(defaultScene !== undefined ? { defaultScene } : {}),
   };
 
-  const res = await loadGame(SLUG, async () => ({ default: gameEntry }));
+  // loadGame validates the module exports a \`bootstrap\` function and returns it.
+  const res = await loadGame(SLUG, async () => gameModule);
   if (!res.ok) { fail('loadGame failed: ' + JSON.stringify(res.error)); return; }
-  await res.value(ctx as never);
+  await res.value(world, ctx as never);
   app.value.start();
 })().catch((e) => fail(String(e?.stack ?? e)));
 `;
@@ -163,20 +223,32 @@ try {
     plugins: [forgeaxShader() as never],
     resolve: {
       alias: { '@forgeax/game-types': resolve(engineSrc, 'src/types.ts') },
-      dedupe: [
-        '@forgeax/engine-runtime',
-        '@forgeax/engine-ecs',
-        '@forgeax/engine-types',
-        '@forgeax/engine-rhi',
-        '@forgeax/engine-math',
-      ],
+      // Dedupe the WHOLE @forgeax family (SSOT-derived) so each engine package
+      // resolves to a single instance — collapses the preserveSymlinks:true
+      // nested-pnpm symlink-diamond (engine-physics ↔ rapier) that an under-set
+      // dedupe lets recurse without bound.
+      dedupe: FORGEAX_WS_PKGS,
       preserveSymlinks: true,
     },
     build: {
       outDir,
       emptyOutDir: true,
       target: 'esnext',
-      rollupOptions: { input: genHtml },
+      rollupOptions: {
+        input: genHtml,
+        // engine-app conditionally `import()`s the Node-only rhi-debug
+        // entrypoints (main `.` + `/adapter`) behind the FORGEAX_ENGINE_RHI_DEBUG
+        // flag, which is OFF in a standalone export (the vite-plugin-rhi-debug
+        // `define` is dev-only). Those modules pull node:fs / node:path / pngjs,
+        // which rollup can't bundle for the browser (broken __vite-browser-external
+        // stubs). Mark them external so they stay runtime dynamic imports that
+        // never fire here. The browser-safe `/capture-browser` subpath is NOT
+        // externalized — it is legitimately bundled.
+        external: [
+          '@forgeax/engine-rhi-debug',
+          '@forgeax/engine-rhi-debug/adapter',
+        ],
+      },
     },
   });
 } finally {
@@ -189,19 +261,37 @@ const emittedHtml = join(outDir, genHtmlName);
 if (existsSync(emittedHtml)) renameSync(emittedHtml, join(outDir, 'index.html'));
 
 // ── Ship raw assets + a relative per-game pack-index (mirrors dev preview). ──
-if (existsSync(gameAssets)) {
-  cpSync(gameAssets, join(outDir, 'game-assets'), { recursive: true });
+// The dev preview's per-game pack roots are BOTH `assets/` and `scenes/`: levels
+// live in scenes/<id>.pack.json (the defaultScene GUID resolves there), monsters
+// /materials in assets/. Ship + catalog both so loadByGuid(defaultScene) resolves
+// in the frozen build, not just in dev.
+const PACK_DIRS = ['assets', 'scenes'] as const;
+for (const d of PACK_DIRS) {
+  const src = join(gameDir, d);
+  if (existsSync(src)) cpSync(src, join(outDir, `game-${d}`), { recursive: true });
 }
+const packRoots = PACK_DIRS.map((d) => join(gameDir, d)).filter((p) => existsSync(p));
 let catalog: Array<{ guid: string; relativeUrl: string; kind: string; sourcePath?: string }> = [];
 try {
-  catalog = existsSync(gameAssets) ? await buildPerGameCatalog(gameAssets) : [];
+  catalog = packRoots.length > 0
+    ? await buildPerGameCatalog(packRoots[0], '/preview', packRoots.slice(1))
+    : [];
 } catch (e) {
   console.warn('[export] pack catalog build failed:', e instanceof Error ? e.message : String(e));
 }
+// Rebase each catalogued url to its shipped location: <gameDir>/<dir>/<rest>
+// becomes ./game-<dir>/<rest>. Match on the source path's pack dir segment.
 const rebased = catalog.map((e) => {
-  const parts = (e.sourcePath ?? e.relativeUrl).split('/assets/');
-  const rel = parts.length > 1 ? parts[parts.length - 1] : (e.relativeUrl.split('/').pop() ?? '');
-  return { guid: e.guid, relativeUrl: `./game-assets/${rel}`, kind: e.kind };
+  const sp = (e.sourcePath ?? e.relativeUrl).split('\\').join('/');
+  for (const d of PACK_DIRS) {
+    const marker = `/${d}/`;
+    const idx = sp.lastIndexOf(marker);
+    if (idx !== -1) {
+      return { guid: e.guid, relativeUrl: `./game-${d}/${sp.slice(idx + marker.length)}`, kind: e.kind };
+    }
+  }
+  // Fallback: keep the basename under game-assets (legacy behaviour).
+  return { guid: e.guid, relativeUrl: `./game-assets/${sp.split('/').pop() ?? ''}`, kind: e.kind };
 });
 writeFileSync(join(outDir, 'pack-index.json'), JSON.stringify(rebased));
 
@@ -254,6 +344,7 @@ Then open **http://localhost:8123** in a WebGPU-capable browser
 | \`assets/\`         | bundled engine runtime + game (JS + wgpu wasm) |
 | \`shaders/\`        | shader pack + \`manifest.json\` |
 | \`game-assets/\`    | the game's raw assets |
+| \`game-scenes/\`    | the game's raw scene/level packs (if any) |
 | \`pack-index.json\` | asset catalog (relative urls) |
 `;
 writeFileSync(join(outDir, 'README.md'), readme);

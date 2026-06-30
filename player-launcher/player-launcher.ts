@@ -63,12 +63,36 @@ try {
   }
 } catch { /* ignore */ }
 
+// Injected into the served HTML entry's <head>:
+//  - <meta name="google" content="notranslate"> is the page-level opt-out that
+//    Chromium/Edge translate both honor. We inject it here (rather than relying
+//    on command-line flags like --disable-features=Translate, which Edge's own
+//    translate implementation ignores) so the "translate this page?" prompt
+//    never appears, regardless of which browser/profile shows the window.
+//  - the keep-alive ping lets the launcher tell whether the game window is still
+//    open — decoupled from the spawned browser process, whose foreground handle
+//    exits early on Windows (Chromium hands the window off to a detached
+//    process), which would otherwise tear down the server.
+const HEAD_INJECT =
+  `<meta name="google" content="notranslate">` +
+  `<script>(function(){function p(){fetch('/__ping').catch(function(){})}p();setInterval(p,1500)}())</script>`;
+
+let lastPing = 0;
+const startTime = Date.now();
+
 const server = Bun.serve({
   hostname: '127.0.0.1',
   port: 0,
   async fetch(req) {
     const url = new URL(req.url);
     let pathname = decodeURIComponent(url.pathname);
+
+    // Keep-alive heartbeat from the injected client script.
+    if (pathname === '/__ping') {
+      lastPing = Date.now();
+      return new Response(null, { status: 204 });
+    }
+
     if (pathname === '/') pathname = '/index.html';
 
     const filePath = join(webRoot, pathname);
@@ -79,6 +103,18 @@ const server = Bun.serve({
     const file = Bun.file(filePath);
     if (!(await file.exists())) {
       return new Response('Not Found', { status: 404 });
+    }
+
+    // Inject the notranslate meta + keep-alive ping into the HTML entry. We also
+    // force the document language to match the content so the browser never
+    // detects a foreign-language page worth offering to translate.
+    if (pathname === '/index.html') {
+      const html = await file.text();
+      let patched = html.includes('</head>')
+        ? html.replace('</head>', `${HEAD_INJECT}</head>`)
+        : `${HEAD_INJECT}${html}`;
+      patched = patched.replace(/<html(?![^>]*\blang=)/i, '<html lang="en" translate="no"');
+      return new Response(patched, { headers: { 'Content-Type': 'text/html' } });
     }
 
     return new Response(file, {
@@ -134,7 +170,11 @@ if (browserExe) {
   // full window with an address bar). --app gives the chromeless app feel.
   const profileDir = join(tmpdir(), `forgeax-player-${process.pid}`);
   console.log(`[forgeax-player] opening app window via ${browserExe}`);
-  const proc = Bun.spawn({
+  // Fire-and-forget: do NOT tie the server lifetime to this process. On Windows
+  // the foreground msedge/chrome process hands the window to a detached process
+  // and exits immediately, so awaiting its exit would stop the server while the
+  // visible window is still loading (→ ERR_CONNECTION_REFUSED).
+  Bun.spawn({
     cmd: [
       browserExe,
       `--app=${gameUrl}`,
@@ -142,16 +182,34 @@ if (browserExe) {
       '--no-first-run',
       '--no-default-browser-check',
       '--window-size=1280,800',
+      // Belt-and-suspenders against the "translate this page?" prompt. The real
+      // fix is the injected <meta name="google" content="notranslate"> (Edge's
+      // own translate ignores --disable-features=Translate), but these are
+      // harmless and cover the Chromium translate UI on Chrome.
+      '--disable-translate',
+      '--disable-features=Translate',
+      '--lang=en-US',
     ],
     stdout: 'ignore',
     stderr: 'ignore',
   });
-  // When the player closes the game window, the dedicated browser instance
-  // exits — shut the local server down too so nothing lingers in the background.
-  await proc.exited;
-  try { server.stop(true); } catch { /* ignore */ }
-  process.exit(0);
 } else {
   await fallbackDefaultBrowser();
   console.log(`[forgeax-player] server running. Visit ${gameUrl} — close this process to stop.`);
 }
+
+// Lifetime is governed by the injected keep-alive heartbeat, not the spawned
+// browser process. While the game window is open the page pings /__ping; once
+// the window closes the pings stop and the launcher shuts the server down and
+// exits — so nothing lingers in the background.
+const IDLE_MS = 8000; // window considered closed after this gap once it has pinged
+const NO_PING_GRACE_MS = 60000; // give the browser this long to cold-start + load
+const timer = setInterval(() => {
+  const now = Date.now();
+  const pinged = lastPing > 0;
+  if ((pinged && now - lastPing > IDLE_MS) || (!pinged && now - startTime > NO_PING_GRACE_MS)) {
+    clearInterval(timer);
+    try { server.stop(true); } catch { /* ignore */ }
+    process.exit(0);
+  }
+}, 2000);

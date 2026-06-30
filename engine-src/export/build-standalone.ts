@@ -75,17 +75,22 @@ if (!existsSync(gameDir)) {
   process.exit(2);
 }
 
-let forge: { entry?: string; name?: string; defaultScene?: string } = {};
+let forge: { entry?: string; name?: string; physics?: unknown; defaultScene?: unknown } = {};
 try { forge = JSON.parse(readFileSync(join(gameDir, 'forge.json'), 'utf8')); } catch { /* defaults */ }
 const entryRel = (forge.entry ?? 'main.ts').replace(/^\.?\//, '');
 const gameName = String(forge.name ?? slug);
-// defaultScene GUID is known at build time from forge.json — the dev preview
-// (play-runtime) resolves it at runtime via loadGameProject, but for a frozen
-// standalone build we inject it directly so the generated entry can instantiate
-// the host-side scene before bootstrap without bundling @forgeax/engine-project.
-const defaultSceneGuid = typeof forge.defaultScene === 'string' && forge.defaultScene.length > 0
-  ? forge.defaultScene
-  : '';
+// Normalize forge.json `physics` into the engine's CreateAppOptions.physics
+// value (mirrors play-runtime/src/main.ts). Absent => physics stays off, so
+// non-physics games pay zero rapier-WASM cost.
+const physicsMode =
+  forge.physics === '3d' || forge.physics === true || forge.physics === 'rapier-3d' ? 'rapier-3d'
+  : forge.physics === '2d' || forge.physics === 'rapier-2d' ? 'rapier-2d'
+  : null;
+// Host-instantiated defaultScene GUID (forge.json `defaultScene`). When set,
+// the generated entry resolves + instantiates it before bootstrap so the game
+// receives a world already carrying the scene entities.
+const defaultSceneGuid =
+  typeof forge.defaultScene === 'string' && forge.defaultScene.length > 0 ? forge.defaultScene : null;
 
 // ── Generate the standalone entry + html at the engine root so the emitted
 // index.html lands at <outDir> root (Vite keeps html paths relative to root). ──
@@ -105,11 +110,12 @@ const gameEntryImport = relGameEntry.startsWith('.') ? relGameEntry : `./${relGa
 // defaultScene (when one exists) BEFORE bootstrap runs, then calls
 // bootstrap(world, ctx) with the world that already carries the scene entities.
 const entrySrc = `import { createApp, loadGame } from '@forgeax/engine-app';
-import * as gameModule from ${JSON.stringify(gameEntryImport)};
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import * as gameModule from ${JSON.stringify(gameEntryImport)};
 
 const SLUG = ${JSON.stringify(slug)};
-const DEFAULT_SCENE_GUID = ${JSON.stringify(defaultSceneGuid)};
+const PHYSICS = ${JSON.stringify(physicsMode)};
+const DEFAULT_SCENE = ${JSON.stringify(defaultSceneGuid)};
 
 function fail(msg: string) {
   const pre = document.createElement('pre');
@@ -131,7 +137,14 @@ function fail(msg: string) {
   canvas.height = window.innerHeight * dpr;
   root.appendChild(canvas);
 
-  const app = await createApp(canvas, { shaderManifestUrl: './shaders/manifest.json' });
+  // createApp(canvas, opts, bundler): shaderManifestUrl belongs on the 3rd
+  // (BundlerOptions) arg — passing it on the 2nd is silently dropped and the
+  // engine falls back to '/shaders/manifest.json' (404 in a standalone build).
+  const app = await createApp(
+    canvas,
+    PHYSICS ? { physics: PHYSICS } : {},
+    { shaderManifestUrl: './shaders/manifest.json' },
+  );
   if (!app.ok) { fail('createApp failed: ' + String(app.error)); return; }
   const { world, renderer } = app.value;
 
@@ -143,15 +156,13 @@ function fail(msg: string) {
     canvas.height = window.innerHeight * d;
   });
 
-  // ── Default scene instantiate (asset-first startup) ──
-  // When forge.json declared a defaultScene, load + instantiate it into the
-  // live world BEFORE bootstrap, so the game module receives a world that
-  // already contains the scene entities (mirrors play-runtime). A failure logs
-  // but does not abort — bootstrap still runs (matches dev-preview AC-10).
+  // Instantiate the forge.json defaultScene BEFORE bootstrap so the game
+  // module receives a world that already contains the scene entities (mirrors
+  // play-runtime/src/main.ts). Assets resolve via the prod pack-index above.
   let defaultSceneRoot;
   let defaultScene;
-  if (DEFAULT_SCENE_GUID) {
-    const parsed = AssetGuid.parse(DEFAULT_SCENE_GUID);
+  if (DEFAULT_SCENE) {
+    const parsed = AssetGuid.parse(DEFAULT_SCENE);
     if (parsed.ok) {
       const assetRes = await renderer.assets.loadByGuid(parsed.value);
       if (assetRes.ok) {
@@ -164,12 +175,12 @@ function fail(msg: string) {
         console.error('[export] defaultScene loadByGuid failed:', assetRes.error);
       }
     } else {
-      console.error('[export] defaultScene GUID malformed:', DEFAULT_SCENE_GUID, parsed.error);
+      console.error('[export] defaultScene GUID malformed:', DEFAULT_SCENE);
     }
   }
 
+  // BootstrapContext: world is the explicit first arg (not a ctx field).
   const ctx = {
-    world,
     renderer,
     assets: renderer.assets,
     app: app.value,
@@ -178,7 +189,8 @@ function fail(msg: string) {
     ...(defaultScene !== undefined ? { defaultScene } : {}),
   };
 
-  // loadGame validates the module exports a \`bootstrap\` function and returns it.
+  // loadGame validates a NAMED \`bootstrap\` function export on the resolved
+  // module; pass the game module namespace verbatim (no { default } wrap).
   const res = await loadGame(SLUG, async () => gameModule);
   if (!res.ok) { fail('loadGame failed: ' + JSON.stringify(res.error)); return; }
   await res.value(world, ctx as never);

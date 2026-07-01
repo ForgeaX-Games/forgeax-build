@@ -1,0 +1,2 @@
+# Web game artefacts are injected here at export time (assets/public/).
+# Keep this file so the directory exists in the template repo.

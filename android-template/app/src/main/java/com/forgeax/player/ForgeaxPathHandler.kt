@@ -23,6 +23,8 @@ class ForgeaxPathHandler(
         val mime = when {
             path.endsWith(".wasm") -> "application/wasm"
             path.endsWith(".js") || path.endsWith(".mjs") -> "text/javascript"
+            path.endsWith(".glb") -> "model/gltf-binary"
+            path.endsWith(".gltf") -> "model/gltf+json"
             else -> return res
         }
         return WebResourceResponse(mime, res.encoding, res.data)

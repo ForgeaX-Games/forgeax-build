@@ -24,7 +24,11 @@ import {
   mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, renameSync, cpSync, chmodSync, readdirSync,
 } from 'node:fs';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
-import { buildPerGameCatalog } from '../pack-catalog.ts';
+import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
+import { gltfImporter } from '@forgeax/engine-gltf';
+import { imageImporter } from '@forgeax/engine-image/image-importer';
+// Note: fbxImporter is imported dynamically inside the vite config block
+// to avoid resolving the native module when just running the script.
 
 const here = dirname(fileURLToPath(import.meta.url)); // .../engine-src/export
 // Engine source migrated to packages/editor/packages/play-runtime; the studio
@@ -91,6 +95,13 @@ const physicsMode =
 // receives a world already carrying the scene entities.
 const defaultSceneGuid =
   typeof forge.defaultScene === 'string' && forge.defaultScene.length > 0 ? forge.defaultScene : null;
+
+// The dev preview's per-game pack roots are BOTH `assets/` and `scenes/`: levels
+// live in scenes/<id>.pack.json (the defaultScene GUID resolves there), monsters
+// /materials in assets/. Ship + catalog both so loadByGuid(defaultScene) resolves
+// in the frozen build, not just in dev.
+const PACK_DIRS = ['assets', 'scenes'] as const;
+const packRoots = PACK_DIRS.map((d) => join(gameDir, d)).filter((p) => existsSync(p));
 
 // ── Generate the standalone entry + html at the engine root so the emitted
 // index.html lands at <outDir> root (Vite keeps html paths relative to root). ──
@@ -226,13 +237,27 @@ const cleanupGen = () => {
 
 try {
   console.log(`[export] building game "${slug}" → ${outDir}`);
+
+  let fbxImporterModule: { fbxImporter: any } | undefined;
+  try {
+    fbxImporterModule = await import('@forgeax/engine-fbx');
+  } catch (e) {
+    console.warn('[export] fbx importer missing; fbx models will not be exported', e);
+  }
+
   await build({
     root: engineSrc,
     base: './',
     configFile: false,
     publicDir: false,
     logLevel: 'warn',
-    plugins: [forgeaxShader() as never],
+    plugins: [
+      forgeaxShader() as never,
+      pluginPack({
+        roots: packRoots,
+        importers: [imageImporter, gltfImporter, ...(fbxImporterModule ? [fbxImporterModule.fbxImporter] : [])],
+      }) as never,
+    ],
     resolve: {
       alias: { '@forgeax/game-types': resolve(engineSrc, 'src/types.ts') },
       // Dedupe the WHOLE @forgeax family (SSOT-derived) so each engine package
@@ -272,40 +297,12 @@ try {
 const emittedHtml = join(outDir, genHtmlName);
 if (existsSync(emittedHtml)) renameSync(emittedHtml, join(outDir, 'index.html'));
 
-// ── Ship raw assets + a relative per-game pack-index (mirrors dev preview). ──
-// The dev preview's per-game pack roots are BOTH `assets/` and `scenes/`: levels
-// live in scenes/<id>.pack.json (the defaultScene GUID resolves there), monsters
-// /materials in assets/. Ship + catalog both so loadByGuid(defaultScene) resolves
-// in the frozen build, not just in dev.
-const PACK_DIRS = ['assets', 'scenes'] as const;
+// ── Ship raw assets ──
+// The game's raw assets and scenes are copied so they match what pluginPack emits.
 for (const d of PACK_DIRS) {
   const src = join(gameDir, d);
   if (existsSync(src)) cpSync(src, join(outDir, `game-${d}`), { recursive: true });
 }
-const packRoots = PACK_DIRS.map((d) => join(gameDir, d)).filter((p) => existsSync(p));
-let catalog: Array<{ guid: string; relativeUrl: string; kind: string; sourcePath?: string }> = [];
-try {
-  catalog = packRoots.length > 0
-    ? await buildPerGameCatalog(packRoots[0], '/preview', packRoots.slice(1))
-    : [];
-} catch (e) {
-  console.warn('[export] pack catalog build failed:', e instanceof Error ? e.message : String(e));
-}
-// Rebase each catalogued url to its shipped location: <gameDir>/<dir>/<rest>
-// becomes ./game-<dir>/<rest>. Match on the source path's pack dir segment.
-const rebased = catalog.map((e) => {
-  const sp = (e.sourcePath ?? e.relativeUrl).split('\\').join('/');
-  for (const d of PACK_DIRS) {
-    const marker = `/${d}/`;
-    const idx = sp.lastIndexOf(marker);
-    if (idx !== -1) {
-      return { guid: e.guid, relativeUrl: `./game-${d}/${sp.slice(idx + marker.length)}`, kind: e.kind };
-    }
-  }
-  // Fallback: keep the basename under game-assets (legacy behaviour).
-  return { guid: e.guid, relativeUrl: `./game-assets/${sp.split('/').pop() ?? ''}`, kind: e.kind };
-});
-writeFileSync(join(outDir, 'pack-index.json'), JSON.stringify(rebased));
 
 // ── serve.sh + README ──
 const serveSh = `#!/usr/bin/env bash

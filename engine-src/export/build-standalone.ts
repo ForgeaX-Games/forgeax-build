@@ -103,6 +103,15 @@ const defaultSceneGuid =
 const PACK_DIRS = ['assets', 'scenes'] as const;
 const packRoots = PACK_DIRS.map((d) => join(gameDir, d)).filter((p) => existsSync(p));
 
+// Shared template assets (e.g. the default game's sky.hdr skylight cube-texture,
+// GUID 81eec382-...) live under the engine root's shared-assets/ dir, folded into
+// EVERY game's catalog by the dev preview (vite.config.ts sharedAssetRoots()).
+// The standalone export must scan it too, otherwise loadByGuid(sky) fails at
+// runtime and installHdrSky falls back to a warm solid ambient — tinting the
+// whole scene orange. Import it through pluginPack alongside the game's own roots.
+const sharedAssetsDir = resolve(engineSrc, 'shared-assets');
+const packRootsAll = existsSync(sharedAssetsDir) ? [...packRoots, sharedAssetsDir] : packRoots;
+
 // ── Generate the standalone entry + html at the engine root so the emitted
 // index.html lands at <outDir> root (Vite keeps html paths relative to root). ──
 const genHtmlName = '.export-gen.index.html';
@@ -254,7 +263,7 @@ try {
     plugins: [
       forgeaxShader() as never,
       pluginPack({
-        roots: packRoots,
+        roots: packRootsAll,
         importers: [imageImporter, gltfImporter, ...(fbxImporterModule ? [fbxImporterModule.fbxImporter] : [])],
       }) as never,
     ],
@@ -302,6 +311,40 @@ if (existsSync(emittedHtml)) renameSync(emittedHtml, join(outDir, 'index.html'))
 for (const d of PACK_DIRS) {
   const src = join(gameDir, d);
   if (existsSync(src)) cpSync(src, join(outDir, `game-${d}`), { recursive: true });
+}
+
+// ── Rebase pack-index.json URLs so every entry points at a shipped file. ──
+// pluginPack emits absolute `/assets/<hash>` URLs for imported DDCs (glb/image)
+// and leaves un-imported rows (legacy scene .pack.json + raw images) pointing at
+// the temp `.forgeax-export` scan dir, which is NOT shipped. Rewrite both:
+//   - files that exist under outDir (vite-emitted DDCs) -> relative `./<path>`
+//   - un-imported source-path rows -> `./game-<dir>/<rest>` (the copied raw files)
+// `metadata` / `name` survive via the object spread (texture dims, display name).
+type PackRow = {
+  guid: string;
+  relativeUrl: string;
+  kind: string;
+  sourcePath?: string;
+  name?: string;
+  metadata?: unknown;
+};
+const idxPath = join(outDir, 'pack-index.json');
+if (existsSync(idxPath)) {
+  const rows: PackRow[] = JSON.parse(readFileSync(idxPath, 'utf8'));
+  const rebased = rows.map((e) => {
+    const stripped = e.relativeUrl.replace(/^\.?\//, '');
+    if (existsSync(join(outDir, stripped))) {
+      return { ...e, relativeUrl: `./${stripped}` }; // vite-emitted DDC
+    }
+    const sp = (e.sourcePath ?? e.relativeUrl).split('\\').join('/');
+    for (const d of PACK_DIRS) {
+      const marker = `/${d}/`;
+      const i = sp.lastIndexOf(marker);
+      if (i !== -1) return { ...e, relativeUrl: `./game-${d}/${sp.slice(i + marker.length)}` };
+    }
+    return e; // leave untouched
+  });
+  writeFileSync(idxPath, JSON.stringify(rebased));
 }
 
 // ── serve.sh + README ──

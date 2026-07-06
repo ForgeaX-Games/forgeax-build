@@ -15,7 +15,7 @@
     {
       "guid": "81eec382-392f-5a93-8998-0ecf11ef7990",
       "sourceIndex": 0,
-      "kind": "image"
+      "kind": "equirect"
     }
   ]
 }

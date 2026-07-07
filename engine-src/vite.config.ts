@@ -295,14 +295,17 @@ export default defineConfig({
     forgeaxPerGamePackBaseStrip() as never,
     // imageImporter mounts POST /__import/:guid so loadByGuid can cook the
     // shared sky.hdr into the RGBA .bin the runtime requires (it no longer
-    // decodes .hdr inline). pluginPack's GLOBAL catalog (the one /__import's
-    // importOneTexture looks the GUID up in) scans ONLY the shared-assets root:
-    // the per-game template games all share the SAME scene/material GUIDs, so
-    // scanning every game root together trips the scanner's duplicate-GUID
-    // guard and collapses the global catalog to [] (then /__import can't find
-    // any row). Game assets don't need the global catalog -- they are served by
-    // vite static (under .forgeax/) + the per-game pack-index middleware, each
-    // of which scans a single game root in isolation.
+    // decodes .hdr inline). This pluginPack's GLOBAL catalog (the one /__import's
+    // importOneTexture looks the GUID up in) scans ONLY the shared-assets root
+    // here: game assets don't need the global catalog -- they are served by vite
+    // static (under .forgeax/) + the per-game pack-index middleware, each of
+    // which scans a single game root in isolation.
+    // NOTE: an earlier version of this comment claimed scanning every game root
+    // together would collapse the global catalog to [] on a cross-root duplicate
+    // GUID. That is no longer true: buildCatalog (build-catalog.ts) degrades to a
+    // per-root scan + first-wins de-dup, dropping only the offending root. The
+    // shared-only scan here is a scoping choice (game roots go through the
+    // per-game middleware), not a duplicate-GUID workaround.
     pluginPack({
       roots: sharedAssetRoots(),
       base: '/preview/',

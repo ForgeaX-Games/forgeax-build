@@ -1,0 +1,7 @@
+# Web product injection point.
+#
+# IosPackager empties this folder and copies the WebPackager output here
+# (index.html, assets/*.js, *.wasm, shaders/, game-assets/, pack-index.json).
+# It is referenced as a *folder reference* in project.pbxproj, so the whole
+# tree is copied verbatim into the app bundle at ForgeaxPlayer.app/public/ and
+# served over forgeax-app://public/ by ForgeaxSchemeHandler.

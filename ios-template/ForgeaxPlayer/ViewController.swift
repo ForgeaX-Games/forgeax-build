@@ -38,6 +38,15 @@ class ViewController: UIViewController {
         webView.scrollView.isScrollEnabled = false
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.allowsBackForwardNavigationGestures = false
+        // DEBUG builds are inspectable via Safari Web Inspector (macOS
+        // Develop menu). iOS 16.4+ requires this opt-in, or the WKWebView
+        // never appears in the device's inspectable target list. Release /
+        // Archive builds stay non-inspectable.
+        #if DEBUG
+        if #available(iOS 16.4, *) {
+            webView.isInspectable = true
+        }
+        #endif
         view = webView
     }
 

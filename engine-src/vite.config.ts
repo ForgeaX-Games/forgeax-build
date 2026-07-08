@@ -372,8 +372,16 @@ export default defineConfig({
       ],
     },
     fs: { allow: [viteRoot], strict: false },
+    // HMR clientPort: when vite runs behind a reverse proxy the browser must
+    // open the HMR websocket to the *gateway* port (usually 443), not the
+    // internal vite port. FORGEAX_HMR_CLIENT_PORT overrides
+    // FORGEAX_INTERFACE_PORT for exactly this case. Local dev leaves both
+    // unset; the default 18920 works because the browser talks to vite
+    // directly.
     hmr: {
-      clientPort: Number(process.env.FORGEAX_INTERFACE_PORT ?? 18920),
+      clientPort: Number(
+        process.env.FORGEAX_HMR_CLIENT_PORT ?? process.env.FORGEAX_INTERFACE_PORT ?? 18920,
+      ),
     },
   },
   build: { outDir: resolve(here, 'dist') },

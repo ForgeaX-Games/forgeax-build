@@ -139,12 +139,45 @@ const DEFAULT_SCENE = ${JSON.stringify(defaultSceneGuid)};
 
 function fail(msg: string) {
   const pre = document.createElement('pre');
-  pre.style.cssText = 'position:fixed;inset:0;margin:0;padding:24px;background:#1a1a1f;color:#ff8a8a;font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap;z-index:99999';
+  pre.style.cssText = 'position:fixed;inset:0;margin:0;padding:24px;background:#1a1a1f;color:#ff8a8a;font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow:auto;z-index:99999';
   const insecure = location.protocol === 'http:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1';
   pre.textContent = (insecure
     ? '\\u26a0 WebGPU requires a secure context. Open over http://localhost (use ./serve.sh) or https.\\n\\n'
     : '') + msg;
   document.body.appendChild(pre);
+}
+
+// Dump a structured inner error (RhiError-shaped) so the on-screen message
+// carries the REAL cause. createApp/createRenderer wrap the actual GPU failure
+// in EngineEnvironmentError.detail.{webgpuError (Channel 2), wgpuError
+// (Channel 3 fallback)}; String(err) alone drops all of it.
+function fmtInner(label: string, re: any): string {
+  if (!re || typeof re !== 'object') return '';
+  const out = ['', '-- ' + label + ' --'];
+  if (re.message) out.push('message:  ' + String(re.message));
+  if (re.code) out.push('code:     ' + String(re.code));
+  if (re.expected) out.push('expected: ' + String(re.expected));
+  if (re.hint) out.push('hint:     ' + String(re.hint));
+  if (re.detail !== undefined) {
+    try { out.push('detail:   ' + JSON.stringify(re.detail)); }
+    catch { out.push('detail:   ' + String(re.detail)); }
+  }
+  return out.join('\\n');
+}
+function formatEngineError(err: any): string {
+  const head = (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err));
+  let body = '';
+  let detail = (err && typeof err === 'object') ? err.detail : undefined;
+  // Some wrappers nest the real EngineEnvironmentError under detail.cause.
+  if (detail && detail.cause && typeof detail.cause === 'object' && detail.cause.detail) {
+    body += fmtInner('cause', detail.cause);
+    detail = detail.cause.detail;
+  }
+  if (detail) {
+    body += fmtInner('webgpu (Channel 2)', detail.webgpuError);
+    body += fmtInner('wgpu (Channel 3 fallback)', detail.wgpuError);
+  }
+  return head + body;
 }
 
 (async () => {
@@ -165,7 +198,7 @@ function fail(msg: string) {
     PHYSICS ? { physics: PHYSICS } : {},
     { shaderManifestUrl: './shaders/manifest.json' },
   );
-  if (!app.ok) { fail('createApp failed: ' + String(app.error)); return; }
+  if (!app.ok) { fail('createApp failed: ' + formatEngineError(app.error)); return; }
   const { world, renderer } = app.value;
 
   renderer.assets.configurePackIndex('./pack-index.json');

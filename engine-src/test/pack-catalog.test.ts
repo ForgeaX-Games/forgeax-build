@@ -13,7 +13,8 @@
 
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 // Path to the main studio tree's shoot assets. Must exist as a precondition;
 // if missing the tests are skipped (not failed) so whitebox CI can run without
@@ -128,6 +129,77 @@ describe('pack-catalog.ts', () => {
       const result = await buildPerGameCatalog('/tmp/nonexistent-assets-dir-42a9f1b3');
       expect(result).toBeArray();
       expect(result.length).toBe(0);
+    });
+  });
+
+  // Regression guard for the skybox-not-rendering bug: an `.hdr` sidecar whose
+  // sub-asset declares kind:'equirect' (feat-20260630 internalized IBL) must
+  // fold to a kind:'equirect' catalog row carrying rgba16float metadata — NOT be
+  // silently dropped. Previously the image-importer arm only knew 'image' /
+  // 'cube-texture', so the equirect sub-asset produced no row, loadByGuid found
+  // no entry, and the Skylight/skybox fell back to the camera clear-color.
+  // Uses the real tracked sky.hdr baked into a temp game dir so the row's
+  // rgba16float metadata comes from an actual import (matches the SSOT
+  // build-catalog.ts and play-runtime pack-catalog.ts equirect arms).
+  describe('equirect .hdr sub-asset (feat-20260630 internalized IBL)', () => {
+    const SKY_HDR = resolve(
+      import.meta.dirname!,
+      '..',
+      'shared-assets',
+      'template-game-default',
+      'sky.hdr',
+    );
+    const hasSkyHdr = existsSync(SKY_HDR);
+    const skip = !hasSkyHdr || !buildPerGameCatalog;
+    const SKY_GUID = '81eec382-392f-5a93-8998-0ecf11ef7990';
+
+    let tmpDir: string | null = null;
+    let entries: Array<Record<string, unknown>> = [];
+
+    beforeAll(async () => {
+      if (skip) return;
+      // Build a minimal game asset root: sky.hdr + an equirect sidecar. The
+      // catalog builder runs relative to process.cwd(); mkdtemp under the
+      // engine-src cwd keeps relative(cwd, ...) sane and the temp dir is removed
+      // in afterAll (below, via rmSync in the last test's finally is fragile, so
+      // we rely on the OS tmpdir cleanup — mkdtemp under tmpdir()).
+      tmpDir = mkdtempSync(resolve(tmpdir(), 'fx-equirect-'));
+      copyFileSync(SKY_HDR, resolve(tmpDir, 'sky.hdr'));
+      writeFileSync(
+        resolve(tmpDir, 'sky.hdr.meta.json'),
+        JSON.stringify({
+          kind: 'external-asset-package',
+          importer: 'image',
+          schemaVersion: '1.0.0',
+          source: 'sky.hdr',
+          importSettings: { colorSpace: 'linear', mipmap: 'auto' },
+          subAssets: [{ guid: SKY_GUID, sourceIndex: 0, kind: 'equirect' }],
+        }),
+      );
+      entries = await buildPerGameCatalog!(tmpDir, '');
+    });
+
+    test.skipIf(skip)('emits a catalog row for the equirect sub-asset (not dropped)', () => {
+      const row = entries.find((e) => e.guid === SKY_GUID);
+      expect(row, 'equirect sub-asset must produce a catalog row').toBeDefined();
+    });
+
+    test.skipIf(skip)('row carries kind:equirect (matches runtime equirectLoader)', () => {
+      const row = entries.find((e) => e.guid === SKY_GUID)!;
+      expect(row.kind).toBe('equirect');
+    });
+
+    test.skipIf(skip)('row metadata is rgba16float linear (baked .bin)', () => {
+      const row = entries.find((e) => e.guid === SKY_GUID)!;
+      const meta = row.metadata as Record<string, unknown>;
+      expect(meta).toBeDefined();
+      expect(meta.format).toBe('rgba16float');
+      expect(meta.colorSpace).toBe('linear');
+      expect(row.relativeUrl).toMatch(/\.bin$/);
+    });
+
+    test.skipIf(skip)('cleanup temp dir', () => {
+      if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
     });
   });
 });

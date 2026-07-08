@@ -113,7 +113,12 @@ async function bakeHdrEquirect(
     decodeImage: async () => {
       throw new Error('decodeImage seam unused on the .hdr bare-source bake path');
     },
-    subAssets: [{ guid, sourceIndex: 0, kind: 'image' as const }],
+    // Post feat-20260630 the image-importer's `.hdr` arm folds ONLY
+    // `kind:'equirect'` sub-assets (image-importer.ts: `if (sub.kind !==
+    // 'equirect') continue`) into a 2D rgba16float EquirectAsset POD. Requesting
+    // `kind:'image'` here made the importer produce nothing, so every HDR bake
+    // silently failed and fell through to a raw-.hdr row -> skybox never loaded.
+    subAssets: [{ guid, sourceIndex: 0, kind: 'equirect' as const }],
     importSettings: { colorSpace: 'linear' as const, mipmap: false },
   };
   let produced: readonly { guid: string; payload: unknown }[];
@@ -123,6 +128,8 @@ async function bakeHdrEquirect(
     console.warn(`[forgeax-pack] hdr bake: importer threw for ${sourceAbsPath}: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   }
+  // EquirectAsset mirrors TextureAsset's 2D-image surface (width/height/format/
+  // data), so the byte extraction below is identical for either payload shape.
   const tex = produced.find((a) => a.guid.toLowerCase() === guidLower)?.payload as TextureAsset | undefined;
   if (tex === undefined) {
     console.warn(`[forgeax-pack] hdr bake: importer produced no asset for ${sourceAbsPath}`);
@@ -209,7 +216,45 @@ async function processMetaSidecar(
     const isHdr = meta.source.toLowerCase().endsWith('.hdr');
     let cubeMetadata: CubeTextureMetadata | undefined;
     for (const sub of meta.subAssets) {
-      if (sub.kind === 'image') {
+      if (sub.kind === 'equirect') {
+        // feat-20260630-equirect-kind-internalized-ibl: an `.hdr` equirect
+        // sub-asset folds to a kind:'equirect' row carrying rgba16float
+        // ImageMetadata (mirrors the engine SSOT build-catalog.ts equirect arm
+        // and the play-runtime pack-catalog.ts copy). The runtime equirectLoader
+        // (UPSTREAM_ENTRY_KINDS, derived) fetches the build-time .bin and the
+        // engine's record arm lazily projects equirect->cubemap for IBL/skybox.
+        // The engine SSOT build-catalog leaves relativeUrl at the raw .hdr and
+        // relies on pluginPack's importer to emit the .bin; this dev per-game
+        // route has NO importer emit step, so we bake the rgba16float .bin here
+        // (cached) and point the row directly at it, exactly like the sibling
+        // image+HDR path. Without this branch the sub-asset was silently dropped
+        // (the loop only knew 'image'/'cube-texture'), leaving Skylight.equirect
+        // with no catalog row -> loadByGuid asset-not-imported -> skybox falls
+        // back to the camera clear-color.
+        const baked = isHdr ? await bakeHdrEquirect(sourceAbsPath, sub.guid) : null;
+        if (baked !== null) {
+          const binRel = relative(cwd, baked.binAbsPath).replace(/\\/g, '/');
+          out.push({
+            guid: sub.guid,
+            relativeUrl: withBase(base, binRel),
+            kind: 'equirect',
+            sourcePath: sourceRel,
+            name: subName(sub),
+            metadata: {
+              kind: 'texture',
+              width: baked.width,
+              height: baked.height,
+              format: 'rgba16float',
+              colorSpace: 'linear',
+              mipmap: false,
+            },
+          });
+        } else {
+          // Bake failed / non-.hdr source -> raw equirect row (loadByGuid then
+          // tries the dev /__import cook as a best-effort fallback).
+          out.push({ guid: sub.guid, relativeUrl: normalizedUrl, kind: 'equirect', sourcePath: sourceRel, name: subName(sub), metadata });
+        }
+      } else if (sub.kind === 'image') {
         if (isHdr) {
           const baked = await bakeHdrEquirect(sourceAbsPath, sub.guid);
           if (baked !== null) {

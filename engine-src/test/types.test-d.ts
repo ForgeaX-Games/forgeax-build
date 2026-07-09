@@ -11,7 +11,8 @@
 
 import type { World } from '@forgeax/engine-ecs';
 import type { Renderer } from '@forgeax/engine-runtime';
-import type { AssetRegistry } from '@forgeax/engine-runtime';
+// engine #650 (Tier-2 decomposition) moved AssetRegistry into engine-assets-runtime.
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { App } from '@forgeax/engine-app';
 
 // ── GameContext v2 expectation ──
@@ -65,7 +66,7 @@ function exerciseContext(ctx: GameContext): void {
   const r: Renderer = ctx.renderer;
   void r;
 
-  // Access assets (should be AssetRegistry from @forgeax/engine-runtime)
+  // Access assets (should be AssetRegistry from @forgeax/engine-assets-runtime)
   const a: AssetRegistry = ctx.assets;
   void a;
 

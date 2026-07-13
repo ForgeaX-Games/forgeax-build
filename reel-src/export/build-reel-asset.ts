@@ -21,7 +21,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 function fail(msg: string): never {
   console.error(`[reel-asset] ${msg}`);

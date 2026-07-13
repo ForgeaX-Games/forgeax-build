@@ -38,7 +38,7 @@ const require = createRequire(import.meta.url);
 const vitePath = require.resolve('vite', { paths: [wbReelDir] });
 const { build } = (await import(pathToFileURL(vitePath).href)) as typeof import('vite');
 
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 function fail(msg: string): never {
   console.error(`[reel-standalone] ${msg}`);

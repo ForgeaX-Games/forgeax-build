@@ -62,7 +62,7 @@ if (!slug || !outDir) {
   console.error('usage: bun export/build-standalone.ts <slug> <outDir>');
   process.exit(2);
 }
-if (!/^[a-z0-9][a-z0-9-]{1,40}$/.test(slug)) {
+if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(slug)) {
   console.error(`invalid slug: ${slug}`);
   process.exit(2);
 }

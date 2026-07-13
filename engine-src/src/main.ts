@@ -44,9 +44,9 @@ function hideLoadingOverlay(): void {
 }
 
 // ── Resolve gameId + validate (needed BEFORE createApp now) ──
-// Game slug format (path c): lowercase alphanumeric + hyphens, 2-41 chars.
+// Game slug format (path c): lowercase alphanumeric + hyphens, 1-41 chars.
 // Used for the physics gate below + the per-game pack-index URLs further down.
-const GAME_ID_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
+const GAME_ID_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 const qp = new URLSearchParams(location.search);
 const rawGameId = qp.get('game') ?? qp.get('slug');

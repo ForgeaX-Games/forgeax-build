@@ -159,7 +159,7 @@ function forgeaxPerGamePackBaseStrip() {
 // by calling buildPerGameCatalog; prod generateBundle emits independent
 // per-game pack-index files.
 export function forgeaxPerGamePackIndex() {
-  const PER_GAME_ROUTE_RE = /^\/pack-index\/([a-z0-9][a-z0-9-]{1,40})\.json$/;
+  const PER_GAME_ROUTE_RE = /^\/pack-index\/([a-z0-9][a-z0-9-]{0,40})\.json$/;
   return {
     name: 'forgeax:per-game-pack-index',
     configureServer(server: { middlewares: { use(fn: Function): unknown } }) {

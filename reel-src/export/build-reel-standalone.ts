@@ -30,7 +30,7 @@ import {
 } from 'node:fs';
 
 const here = dirname(fileURLToPath(import.meta.url)); // .../build/reel-src/export
-const wbReelDir = resolve(here, '../../../marketplace/plugins/wb-reel');
+const wbReelDir = resolve(here, '../../../marketplace/extensions/wb-reel');
 
 // reel-src has no node_modules of its own — resolve vite from the wb-reel
 // package (which depends on it) so this script runs without a local install.

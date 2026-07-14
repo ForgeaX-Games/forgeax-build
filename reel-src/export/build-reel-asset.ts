@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import {
   buildReelGameAsset,
   type ResolvedBlob,
-} from '../../../marketplace/plugins/wb-reel/src/scenario/pkg/buildReelGameAsset.ts';
+} from '../../../marketplace/extensions/wb-reel/src/scenario/pkg/buildReelGameAsset.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -98,7 +98,7 @@ const scenario = item.scenario;
 // Media resolution: per-game assets dir first, then the legacy global
 // .reel-assets (migration fallback so already-made games stay exportable).
 const perGameAssets = join(gameDir, 'reel', 'assets');
-const globalAssets = resolve(projectRoot, 'packages/marketplace/plugins/wb-reel/.reel-assets');
+const globalAssets = resolve(projectRoot, 'packages/marketplace/extensions/wb-reel/.reel-assets');
 const manifests = [
   { dir: perGameAssets, records: loadManifest(perGameAssets) },
   { dir: globalAssets, records: loadManifest(globalAssets) },

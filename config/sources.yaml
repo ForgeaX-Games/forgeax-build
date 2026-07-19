@@ -23,7 +23,7 @@ sources:
     description: React + Vite Studio UI.
 
   - name: cli
-    # Vendored forgeax-cli (agentteam-os-future) snapshot. Real agent runtime
+    # Vendored @forgeax/orchestrator (agentteam-os-future) snapshot. Real agent runtime
     # kernel — drives every chat turn through gateway HTTP+WS on :3700.
     repo: cli
     recipe: cli

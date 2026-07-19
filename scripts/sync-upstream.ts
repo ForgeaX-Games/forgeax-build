@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
- * sync-upstream — pull forgeax-cli upstream into the forgeax-cli vendor snapshot.
+ * sync-upstream — pull @forgeax/orchestrator upstream into the @forgeax/orchestrator vendor snapshot.
  *
  * Direction:
- *   git@github.com:ForgeaX-Games/forgeax-cli (ref) ──rsync──> ../forgeax-cli/
+ *   git@github.com:ForgeaX-Games/forgeax-orchestrator (ref) ──rsync──> ../forgeax-orchestrator/
  *
  * This is the FIRST stage of the forgeax build pipeline. The vendor stage
  * (recipes/cli.ts) reads forgeax-cli/ and copies it into output/apps/cli/;
@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url';
 
 // ─── Config ───
 
-const REPO_URL = 'git@github.com:ForgeaX-Games/forgeax-cli.git';
+const REPO_URL = 'git@github.com:ForgeaX-Games/forgeax-orchestrator.git';
 const DEFAULT_REF = 'agentteam-os-future';
 
 /**
@@ -52,7 +52,7 @@ const DEFAULT_REF = 'agentteam-os-future';
  *
  * Deliberately NOT in KEEP: src/fs/state-dir.ts.
  *   The FORGEAX_STATE_DIR patch was retired 2026-05-12 — run.sh now exports
- *   AGENTEAM_STATE_DIR directly (vanilla forgeax-cli reads that name). The
+ *   AGENTEAM_STATE_DIR directly (vanilla @forgeax/orchestrator reads that name). The
  *   first sync-upstream --apply drops the 4-line patch and brings in
  *   upstream's clean state-dir.ts; no further action required.
  */
@@ -106,7 +106,7 @@ function parseArgs(): Args {
   const out: Args = {
     apply: false,
     upstream: join(buildRoot, 'workspace', 'sync-upstream', 'agentic-os2-upstream'),
-    vendor: resolve(buildRoot, '..', 'forgeax-cli'),
+    vendor: resolve(buildRoot, '..', 'forgeax-orchestrator'),
     ref: DEFAULT_REF,
     noFetch: false,
     report: null,
@@ -139,7 +139,7 @@ function printHelp(): void {
     `Usage: bun scripts/sync-upstream.ts [options]\n` +
     `  --apply              Actually write (default: dry-run)\n` +
     `  --upstream <path>    Upstream clone path (default: workspace/sync-upstream/agentic-os2-upstream)\n` +
-    `  --vendor <path>      Vendor target path (default: ../forgeax-cli)\n` +
+    `  --vendor <path>      Vendor target path (default: ../forgeax-orchestrator)\n` +
     `  --ref <name>         Upstream branch/tag (default: ${DEFAULT_REF})\n` +
     `  --no-fetch           Skip git fetch (reuse existing clone as-is)\n` +
     `  --report <file>      Write report to file (default: stdout)\n` +

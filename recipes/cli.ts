@@ -1,4 +1,4 @@
-// Recipe: forgeax-cli (vendored forgeax-cli snapshot) -> output/apps/cli/
+// Recipe: @forgeax/orchestrator (vendored @forgeax/orchestrator snapshot) -> output/apps/cli/
 //
 // Strategy: copy a fixed allowlist of files/dirs from the local source repo
 // to the build output. Skip ui/ (we use forgeax-interface for the MVP),
@@ -71,13 +71,13 @@ const recipe = async (ctx: RecipeContext) => {
     copied++;
   }
 
-  // Sanity: package.json name must be @forgeax/cli (set in STEP 03 already; defensive normalize).
+  // Sanity: package.json name must be @forgeax/orchestrator (set in STEP 03 already; defensive normalize).
   const pkgPath = join(targetDir, 'package.json');
   const pkg = JSON.parse(await readFile(pkgPath, 'utf8'));
-  if (pkg.name !== '@forgeax/cli') {
-    pkg.name = '@forgeax/cli';
+  if (pkg.name !== '@forgeax/orchestrator') {
+    pkg.name = '@forgeax/orchestrator';
     await writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-    console.log('  normalized package.json name -> @forgeax/cli');
+    console.log('  normalized package.json name -> @forgeax/orchestrator');
   }
   if (!pkg.private) {
     pkg.private = true;

@@ -24,7 +24,7 @@ const PKG_JSON = `{
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Vendored skills + schemas (markdown/JSON only, no python). Loaded by forgeax-cli.",
+  "description": "Vendored skills + schemas (markdown/JSON only, no python). Loaded by @forgeax/orchestrator.",
   "scripts": {
     "postinstall": "bun scripts/install.ts"
   }
@@ -33,7 +33,7 @@ const PKG_JSON = `{
 
 const README = `# @forgeax/harness
 
-Vendored skill markdown + JSON schemas. Loaded by \`forgeax-cli\` at startup.
+Vendored skill markdown + JSON schemas. Loaded by \`@forgeax/orchestrator\` at startup.
 
 ## Layout
 

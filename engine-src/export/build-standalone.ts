@@ -20,6 +20,7 @@
 import { build } from 'vite';
 import { resolve, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import {
   mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, renameSync, cpSync, chmodSync, readdirSync,
 } from 'node:fs';
@@ -114,24 +115,46 @@ const packRootsAll = existsSync(sharedAssetsDir) ? [...packRoots, sharedAssetsDi
 
 // ── Generate the standalone entry + html at the engine root so the emitted
 // index.html lands at <outDir> root (Vite keeps html paths relative to root). ──
-const genHtmlName = '.export-gen.index.html';
-const genEntryName = '.export-gen.main.ts';
+// The gen files live at engineSrc ROOT (shared across runs), so their names are
+// per-run unique: two concurrent exports must not clobber / cleanup each other's
+// `.export-gen.*` at the same path.
+const runId = randomUUID().slice(0, 8);
+const genHtmlName = `.export-gen.${runId}.index.html`;
+const genEntryName = `.export-gen.${runId}.main.ts`;
 const genHtml = join(engineSrc, genHtmlName);
 const genEntry = join(engineSrc, genEntryName);
 // Import the game by a path relative to engineSrc (where the gen entry lives),
 // so it works whether the game sits at the default .forgeax/games junction or
 // in the packager's temp copy (FORGEAX_GAME_DIR), both physically under engineSrc.
+// Only `./` and `../` are valid ES relative-specifier prefixes: a hidden dir like
+// `.forgeax-export/…` starts with `.` but is NOT relative, so always prepend `./`
+// unless already `./`/`../`-prefixed. (vite@6 tolerates a bare leading dot, but
+// the declared vite@8 / rolldown does not — this keeps export forward-compatible.)
 const relGameEntry = relative(engineSrc, join(gameDir, entryRel)).split(sep).join('/');
-const gameEntryImport = relGameEntry.startsWith('.') ? relGameEntry : `./${relGameEntry}`;
+const gameEntryImport = (relGameEntry.startsWith('./') || relGameEntry.startsWith('../'))
+  ? relGameEntry
+  : `./${relGameEntry}`;
 
 // The game module is statically imported (bundled at build time) and consumed
 // via loadGame, which validates the `bootstrap` export and returns the entry.
 // This mirrors the dev preview (play-runtime): host instantiates the
 // defaultScene (when one exists) BEFORE bootstrap runs, then calls
 // bootstrap(world, ctx) with the world that already carries the scene entities.
+// Physics is enabled by passing `plugins: [physicsPlugin(mode)]` in createApp's
+// 2nd (CreateAppOptions) arg — MIRRORS play-runtime. CreateAppOptions.physics is
+// a READBACK field (a PhysicsWorld handle), NOT the backend selector: passing the
+// backend string there is silently dropped, so the export never actually got
+// physics (bullets couldn't knock props — the "editor bounces the ball, the EXE
+// doesn't" symptom). Import + reference physicsPlugin ONLY when this game opts in
+// (forge.json "physics"), so non-physics games don't bundle the rapier WASM.
+const physicsImportLine = physicsMode
+  ? "import { physicsPlugin } from '@forgeax/engine-physics';\n"
+  : '';
+const createAppOptsExpr = physicsMode ? '{ plugins: [physicsPlugin(PHYSICS)] }' : '{}';
+
 const entrySrc = `import { createApp, loadGame } from '@forgeax/engine-app';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import * as gameModule from ${JSON.stringify(gameEntryImport)};
+${physicsImportLine}import * as gameModule from ${JSON.stringify(gameEntryImport)};
 
 const SLUG = ${JSON.stringify(slug)};
 const PHYSICS = ${JSON.stringify(physicsMode)};
@@ -193,9 +216,11 @@ function formatEngineError(err: any): string {
   // createApp(canvas, opts, bundler): shaderManifestUrl belongs on the 3rd
   // (BundlerOptions) arg — passing it on the 2nd is silently dropped and the
   // engine falls back to '/shaders/manifest.json' (404 in a standalone build).
+  // The 2nd arg carries the physics plugin (see physicsImportLine note above):
+  // ${createAppOptsExpr} — plugins:[physicsPlugin(mode)] when the game opts in.
   const app = await createApp(
     canvas,
-    PHYSICS ? { physics: PHYSICS } : {},
+    ${createAppOptsExpr},
     { shaderManifestUrl: './shaders/manifest.json' },
   );
   if (!app.ok) { fail('createApp failed: ' + formatEngineError(app.error)); return; }
@@ -346,36 +371,47 @@ for (const d of PACK_DIRS) {
   if (existsSync(src)) cpSync(src, join(outDir, `game-${d}`), { recursive: true });
 }
 
-// ── Rebase pack-index.json URLs so every entry points at a shipped file. ──
-// pluginPack emits absolute `/assets/<hash>` URLs for imported DDCs (glb/image)
-// and leaves un-imported rows (legacy scene .pack.json + raw images) pointing at
-// the temp `.forgeax-export` scan dir, which is NOT shipped. Rewrite both:
-//   - files that exist under outDir (vite-emitted DDCs) -> relative `./<path>`
-//   - un-imported source-path rows -> `./game-<dir>/<rest>` (the copied raw files)
-// `metadata` / `name` survive via the object spread (texture dims, display name).
+// ── Rebase pack-index.json packageUrls to shipped, base-relative files. ──
+// pluginPack (catalog v2) emits each row with an ABSOLUTE `packageUrl`
+// (`/assets/<guid>.pack-<hash>.json`) pointing at the vite-emitted Pack v2 file.
+// Under this export's `base: './'` an absolute `/assets/…` only resolves when the
+// site is served from the origin ROOT; a sub-path deployment (or the desktop
+// launcher mounting the build under a prefix) then 404s every asset. Rewrite each
+// packageUrl to a RELATIVE `./assets/…` so it resolves against pack-index.json's
+// own location (assets-runtime resolveCatalogAssetUrl uses `new URL(packageUrl,
+// packIndexUrl)`). The Pack v2 files themselves reference their body.bin artifacts
+// by pack-relative paths, so no further rewrite is needed inside them.
+//
+// CRITICAL: the runtime catalog parser (assets-runtime parseCatalog) REJECTS the
+// ENTIRE pack-index if ANY row carries a legacy locator field (`relativeUrl`) or
+// any of metadata/compression/artifacts/assetCodec/contentEncoding — it demands
+// navigation-only rows. The previous rebase INJECTED `relativeUrl` onto every
+// source-path row, so the current engine dropped the whole index at runtime →
+// loadByGuid failed for the scene, character, sky (→ warm ambient fallback) and
+// HUD, i.e. the "packaged EXE looks nothing like the editor" symptom. So we must
+// only ever touch `packageUrl` and preserve every other field verbatim via spread.
 type PackRow = {
   guid: string;
-  relativeUrl: string;
+  packageUrl?: string;
   kind: string;
-  sourcePath?: string;
-  name?: string;
-  metadata?: unknown;
+  [key: string]: unknown;
 };
 const idxPath = join(outDir, 'pack-index.json');
 if (existsSync(idxPath)) {
   const rows: PackRow[] = JSON.parse(readFileSync(idxPath, 'utf8'));
   const rebased = rows.map((e) => {
-    const stripped = e.relativeUrl.replace(/^\.?\//, '');
+    const url = typeof e.packageUrl === 'string' ? e.packageUrl : '';
+    if (!url) return e;
+    // Normalize to a path relative to outDir root, then verify it was shipped.
+    const stripped = url.replace(/^\.?\//, '');
     if (existsSync(join(outDir, stripped))) {
-      return { ...e, relativeUrl: `./${stripped}` }; // vite-emitted DDC
+      return { ...e, packageUrl: `./${stripped}` };
     }
-    const sp = (e.sourcePath ?? e.relativeUrl).split('\\').join('/');
-    for (const d of PACK_DIRS) {
-      const marker = `/${d}/`;
-      const i = sp.lastIndexOf(marker);
-      if (i !== -1) return { ...e, relativeUrl: `./game-${d}/${sp.slice(i + marker.length)}` };
-    }
-    return e; // leave untouched
+    // Not shipped under outDir — leave it so the row still parses, but surface it
+    // in the build log so a missing artifact is visible now, not as a silent
+    // runtime 404. (Absolute origin-root URLs still work for a root-served build.)
+    console.warn(`[export] pack-index packageUrl not shipped under outDir: ${url} (guid ${e.guid})`);
+    return e;
   });
   writeFileSync(idxPath, JSON.stringify(rebased));
 }

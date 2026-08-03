@@ -352,6 +352,29 @@ try {
           '@forgeax/engine-rhi-debug',
           '@forgeax/engine-rhi-debug/adapter',
         ],
+        // Emit ONE self-contained bundle: inline every dynamic import() into the
+        // entry chunk instead of code-splitting it into a separate lazy chunk.
+        //
+        // WHY (Android release): the engine lazily `import()`s the physics
+        // backend (@forgeax/engine-physics-rapier3d → @dimforge/rapier*-compat)
+        // and other feature chunks at runtime. In an Android WebView the game is
+        // served from assets/public/ via WebViewAssetLoader over the virtual
+        // https://appassets.androidplatform.net origin. The entry <script
+        // type=module> loads fine (navigation subresource), but a JS-initiated
+        // runtime import() of a code-split chunk fails with
+        // `TypeError: Failed to fetch dynamically imported module` — the
+        // intercepted response is treated as an opaque origin, so createApp's
+        // physics plugin build() throws plugin-build-failed on device. Inlining
+        // removes every runtime import() fetch: all engine + game + rapier code
+        // ships inside the entry chunk that already loads, so there is nothing
+        // left to fetch lazily. A standalone game bundle is meant to be one
+        // self-contained artifact anyway, so the larger single chunk is fine.
+        //
+        // externalized rhi-debug stays a bare (never-fired) dynamic import and is
+        // unaffected — it is not bundled, so it is not something to inline.
+        output: {
+          inlineDynamicImports: true,
+        },
       },
     },
   });

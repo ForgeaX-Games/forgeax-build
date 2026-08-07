@@ -262,7 +262,7 @@ function formatEngineError(err: any): string {
     renderer,
     assets: renderer.assets,
     app: app.value,
-    setPointerLockAllowed(allowed: boolean) { app.value.input?.setPointerLockAllowed?.(allowed); },
+    registerUpdate(fn: (dt: number) => void) { app.value.registerUpdate(fn); },
     ...(defaultSceneRoot !== undefined ? { defaultSceneRoot } : {}),
     ...(defaultScene !== undefined ? { defaultScene } : {}),
   };
@@ -271,7 +271,7 @@ function formatEngineError(err: any): string {
   // module; pass the game module namespace verbatim (no { default } wrap).
   const res = await loadGame(SLUG, async () => gameModule);
   if (!res.ok) { fail('loadGame failed: ' + JSON.stringify(res.error)); return; }
-  await res.value(world, ctx);
+  await res.value(world, ctx as never);
   app.value.start();
 })().catch((e) => fail(String(e?.stack ?? e)));
 `;

@@ -2,17 +2,10 @@ import {
   createApp,
   loadGame,
   isLoadGameError,
-  type BootstrapContext,
-  type BootstrapEntry,
+  type GameEntry,
 } from '@forgeax/engine-app';
-import { physicsPlugin } from '@forgeax/engine-physics';
-import { perspective, Camera } from '@forgeax/engine-render';
-import { Transform } from '@forgeax/engine-scene';
-import { createDevImportTransport } from '@forgeax/engine-runtime';
-import type { RuntimeAssetBinding } from '@forgeax/engine-types';
-import { Time, Update } from '@forgeax/engine-ecs';
-
-declare const __FORGEAX_GAMES_URL_PREFIX__: string;
+import { perspective, Camera, Transform, createDevImportTransport } from '@forgeax/engine-runtime';
+import type { GameContext } from './types';
 
 const root = document.getElementById('app') ?? document.body;
 
@@ -50,59 +43,14 @@ function hideLoadingOverlay(): void {
   setTimeout(() => loadingOverlay.remove(), 350);
 }
 
-// ── Resolve the active runtime binding ──
+// ── Resolve gameId + validate (needed BEFORE createApp now) ──
 // Game slug format (path c): lowercase alphanumeric + hyphens, 1-41 chars.
+// Used for the physics gate below + the per-game pack-index URLs further down.
 const GAME_ID_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 const qp = new URLSearchParams(location.search);
 const rawGameId = qp.get('game') ?? qp.get('slug');
-const requestedGameId = rawGameId && GAME_ID_RE.test(rawGameId) ? rawGameId : null;
-
-async function loadRuntimeBinding(): Promise<RuntimeAssetBinding | undefined> {
-  const base = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '');
-  const bindingUrl = `${base}/__pack/runtime-binding.json`;
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    try {
-      const response = await fetch(bindingUrl, { cache: 'no-store' });
-      if (response.status === 503) {
-        const body = await response.json().catch(() => null) as { status?: unknown } | null;
-        if (body?.status === 'unbound') return undefined;
-      }
-      if (response.ok) {
-        const candidate = await response.json() as Partial<RuntimeAssetBinding>;
-        if (
-          candidate.schemaVersion === 'runtime-asset-binding-v1'
-          && typeof candidate.gameId === 'string'
-          && typeof candidate.scopeId === 'string'
-          && Number.isSafeInteger(candidate.generation)
-          && (candidate.status === 'ready' || candidate.status === 'degraded')
-          && typeof candidate.catalogUrl === 'string'
-          && typeof candidate.importUrlBase === 'string'
-          && typeof candidate.packageUrlBase === 'string'
-        ) {
-          return candidate as RuntimeAssetBinding;
-        }
-      }
-    } catch {
-      // The sidecar may still be starting or rebinding.
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error('[engine] no authoritative runtime asset binding became ready');
-}
-
-const runtimeBinding = await loadRuntimeBinding();
-if (runtimeBinding !== undefined && requestedGameId !== null && runtimeBinding.gameId !== requestedGameId) {
-  throw new Error(
-    `[engine] requested game ${requestedGameId} does not match active runtime scope ${runtimeBinding.gameId}`,
-  );
-}
-const gameId = runtimeBinding?.gameId ?? requestedGameId ?? '_template';
-
-function gameUrlBase(base: string, id: string): string {
-  const prefix = base.replace(/\/$/, '');
-  return `${prefix}/${__FORGEAX_GAMES_URL_PREFIX__}/${id}`;
-}
+const gameId = (rawGameId && GAME_ID_RE.test(rawGameId)) ? rawGameId : '_template';
 
 // ── Physics gate (per-game opt-in via forge.json "physics") ──
 // Physics is OFF by default so non-physics games pay zero rapier-WASM cost. A
@@ -116,7 +64,7 @@ let physics: 'rapier-3d' | 'rapier-2d' | undefined;
 {
   const base = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '');
   try {
-    const fj = await fetch(`${gameUrlBase(base, gameId)}/forge.json`, { cache: 'no-store' });
+    const fj = await fetch(`${base}/.forgeax/games/${gameId}/forge.json`, { cache: 'no-store' });
     if (fj.ok) {
       const p = ((await fj.json()) as { physics?: unknown } | null)?.physics;
       if (p === '3d' || p === true || p === 'rapier-3d') physics = 'rapier-3d';
@@ -130,12 +78,13 @@ let physics: 'rapier-3d' | 'rapier-2d' | undefined;
 // CreateAppOptions onto the 3rd-arg BundlerOptions. Passing it on the 2nd arg
 // is silently dropped (structural subtyping), causing the engine to fall back
 // to the bare '/shaders/manifest.json' which 404s + SPA-falls-back to HTML.
-const devImportTransport = runtimeBinding === undefined
-  ? undefined
-  : createDevImportTransport(runtimeBinding);
-const app = await createApp(canvas, physics ? { plugins: [physicsPlugin(physics)] } : {}, {
+const app = await createApp(canvas, physics ? { physics } : {}, {
   shaderManifestUrl: '/preview/shaders/manifest.json',
-  ...(devImportTransport === undefined ? {} : { importTransport: devImportTransport }),
+  // Dev lazy-import fallback: when loadByGuid misses a GUID not in the
+  // configured per-game pack-index, POST /__import/<guid> to cook it. The
+  // template's skylight cube-texture is already cataloged (shared-assets root),
+  // so this is belt-and-suspenders matching the engine's canonical IBL bundler.
+  importTransport: createDevImportTransport(),
 });
 
 if (!app.ok) {
@@ -146,13 +95,26 @@ if (!app.ok) {
 
 const { world, renderer } = app.value;
 
-// ── Active runtime catalog ──
-// Development uses the server-confirmed scoped binding. A static build has one
-// immutable single-game pack-index emitted by its own Vite build; it never
-// falls back from one game's catalog to another catalog.
+// ── Pack index (prod loadByGuid path) ──
+// Per-game index URL: /preview/pack-index/<gameId>.json
+// Falls back to global /pack-index.json when the per-game index 404s
+// (old games or _template that have no per-game catalog).
 const packBase = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '');
-if (runtimeBinding !== undefined) renderer.assets.configureRuntimeBinding(runtimeBinding);
-else if (import.meta.env.PROD) renderer.assets.configurePackIndex(`${packBase}/pack-index.json`);
+const perGameUrl = `${packBase}/pack-index/${gameId}.json`;
+const globalUrl = `${packBase}/pack-index.json`;
+renderer.assets.configurePackIndex(perGameUrl);
+// Prefetch the per-game index to detect 404; fall back to global on failure.
+(async () => {
+  try {
+    const res = await fetch(perGameUrl, { method: 'HEAD' });
+    if (!res.ok && gameId !== '_template') {
+      console.log(`[engine] per-game pack-index ${perGameUrl} returned ${res.status}, falling back to global index`);
+      renderer.assets.configurePackIndex(globalUrl);
+    }
+  } catch {
+    // Network error: keep the per-game URL and let the runtime retry.
+  }
+})();
 
 // DEBUG: expose for console probing
 (window as unknown as Record<string, unknown>).__forgeax = { app: app.value, world, renderer };
@@ -183,7 +145,7 @@ if (gameId && gameId !== '_template') {
     // on the next reload — without it the browser may serve a stale forge.json
     // from disk cache and `wantsPointerLock` stays false even after the file is
     // updated. The physics gate above already uses 'no-store' for the same reason.
-    const fj = await fetch(`${gameUrlBase(base, gameId)}/forge.json`, { cache: 'no-store' });
+    const fj = await fetch(`${base}/.forgeax/games/${gameId}/forge.json`, { cache: 'no-store' });
     if (fj.ok) {
       const j = (await fj.json()) as { pointerLock?: boolean; input?: string } | null;
       wantsPointerLock = j?.pointerLock === true || j?.input === 'fps';
@@ -196,7 +158,7 @@ if (gameId && gameId !== '_template') {
 // non-FPS games (the default), no-op the canvas's requestPointerLock so the banner
 // never appears. FPS games (below) use the native Tauri cursor-grab path instead.
 if (!wantsPointerLock) {
-  try { canvas.requestPointerLock = () => Promise.resolve(); } catch { /* ignore */ }
+  try { (canvas as HTMLCanvasElement & { requestPointerLock: () => void }).requestPointerLock = () => {}; } catch { /* ignore */ }
 }
 if (wantsPointerLock) {
   const hud = document.getElementById('hud');
@@ -218,20 +180,17 @@ if (wantsPointerLock) {
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && captured) setCaptured(false); });
 }
 
-// ── BootstrapContext ──
-// The current Engine contract passes World as the first bootstrap argument and
-// keeps host services in the optional context. This keeps the release runtime
-// aligned with the Studio Play host and prevents a second legacy entry shape
-// from becoming a hidden compatibility layer.
-const ctx: BootstrapContext = {
+// ── GameContext (superset: includes both legacy `renderer` and new `app` fields) ──
+const ctx: GameContext = {
+  world,
   renderer,
   assets: renderer.assets,
   app: app.value,
-  setPointerLockAllowed: (allowed: boolean) => app.value.input?.setPointerLockAllowed?.(allowed),
+  registerUpdate(fn) { app.value.registerUpdate(fn); },
 };
 
 // ── loadGame ──
-async function resolveGame(id: string): Promise<BootstrapEntry | null> {
+async function resolveGame(id: string): Promise<GameEntry | null> {
   // id is already validated by GAME_ID_RE before reaching here.
   // Non-template slugs that fail validation are replaced with '_template'
   // during URL construction.
@@ -240,7 +199,7 @@ async function resolveGame(id: string): Promise<BootstrapEntry | null> {
     return null;
   }
   const base = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '');
-  const gameBase = gameUrlBase(base, id);
+  const gameBase = `${base}/.forgeax/games/${id}`;
 
   // Entry resolution. The game entry filename is no longer hardcoded: the
   // authoritative source is forge.json's `entry` field (relative to the game
@@ -282,7 +241,7 @@ async function resolveGame(id: string): Promise<BootstrapEntry | null> {
 
 const entry = await resolveGame(gameId);
 if (entry) {
-  await entry(world, ctx);
+  await entry(ctx);
 } else {
   console.log('[engine] using fallback scene; write games/<id>/main.ts to override');
   world.spawn(
@@ -309,29 +268,24 @@ let frames = 0;
 let fpsAccum = 0;
 let lastFps = 0;
 let lastHeartbeat = 0;
-world.addSystem(Update, {
-  name: 'preview-runtime-fps-heartbeat',
-  queries: [],
-  fn: (currentWorld) => {
-    // First frame rendered (scene was instantiated during the awaited
-    // bootstrap above, so frame 1 already shows it) → fade out the overlay.
-    hideLoadingOverlay();
-    frames++;
-    const dt = currentWorld.getResource(Time).delta;
-    fpsAccum += dt;
-    if (fpsAccum >= 1) {
-      lastFps = Math.round(frames / fpsAccum);
-      frames = 0;
-      fpsAccum = 0;
-    }
-    const now = performance.now();
-    if (now - lastHeartbeat < HEARTBEAT_MS) return;
-    lastHeartbeat = now;
-    try {
-      window.parent?.postMessage({ type: 'VAG_FPS_STATS', payload: { fps: lastFps } }, '*');
-    } catch { /* parent might be cross-origin */ }
-  },
-}).unwrap();
+app.value.registerUpdate((dt) => {
+  // First frame rendered (scene was instantiated during the awaited entry() above,
+  // so frame 1 already shows it) → fade out the loading overlay.
+  hideLoadingOverlay();
+  frames++;
+  fpsAccum += dt;
+  if (fpsAccum >= 1) {
+    lastFps = Math.round(frames / fpsAccum);
+    frames = 0;
+    fpsAccum = 0;
+  }
+  const now = performance.now();
+  if (now - lastHeartbeat < HEARTBEAT_MS) return;
+  lastHeartbeat = now;
+  try {
+    window.parent?.postMessage({ type: 'VAG_FPS_STATS', payload: { fps: lastFps } }, '*');
+  } catch { /* parent might be cross-origin */ }
+});
 
 // ── Console bridge (VAG_CONSOLE postMessage) ──
 // Render errors / AppError / RhiError / EcsError verbosely so the bridged
@@ -432,10 +386,7 @@ window.addEventListener('unhandledrejection', (ev) => {
 // Surfacing them as VAG_CONSOLE errors makes the Studio Console (hence the
 // agent) aware the Preview is broken even when nothing executed.
 if (import.meta.hot) {
-  const hot = import.meta.hot as unknown as {
-    on(event: string, callback: (payload: { err?: { message?: string; id?: string; loc?: { file?: string; line?: number } } }) => void): void;
-  };
-  hot.on('vite:error', (payload) => {
+  import.meta.hot.on('vite:error', (payload: { err?: { message?: string; id?: string; loc?: { file?: string; line?: number } } }) => {
     try {
       const err = payload?.err;
       const where = err?.loc?.file ? ` (${err.loc.file}${err.loc.line ? `:${err.loc.line}` : ''})` : err?.id ? ` (${err.id})` : '';
